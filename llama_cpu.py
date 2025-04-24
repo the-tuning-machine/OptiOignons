@@ -1,4 +1,3 @@
-
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
 
@@ -25,6 +24,11 @@ class ModelArgs:
 
     max_batch_size: int = 32
     max_seq_len: int = 2048
+    causal_mask: bool = True  # Ajout du paramètre pour contrôler le masque causal
+    use_output_layer: bool = False  # Ajout du paramètre pour contrôler la couche output
+    apply_tok_embeddings: bool = (
+        True  # Ajout du paramètre pour contrôler tok_embeddings
+    )
 
 
 class RMSNorm(torch.nn.Module):
@@ -191,15 +195,9 @@ class FeedForward(nn.Module):
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-        self.w1 = nn.Linear(
-            dim, hidden_dim, bias=False
-        )
-        self.w2 = nn.Linear(
-            hidden_dim, dim, bias=False
-        )
-        self.w3 = nn.Linear(
-            dim, hidden_dim, bias=False
-        )
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -240,19 +238,18 @@ class Transformer(nn.Module):
         self.params = params
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
+        self.causal_mask = params.causal_mask  # Stocker le paramètre
+        self.use_output_layer = params.use_output_layer  # Stocker le paramètre
+        self.apply_tok_embeddings = params.apply_tok_embeddings  # Stocker le paramètre
 
-        self.tok_embeddings = nn.Embedding(
-            params.vocab_size, params.dim
-        )
+        self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
 
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
-        self.output = nn.Linear(
-            params.dim, params.vocab_size, bias=False
-        )
+        self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
         self.freqs_cis = precompute_freqs_cis(
             params.dim // params.n_heads,
@@ -262,13 +259,17 @@ class Transformer(nn.Module):
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
-        _bsz, seqlen = tokens.shape
-        h = self.tok_embeddings(tokens)
+        if self.apply_tok_embeddings:
+            _bsz, seqlen = tokens.shape
+            h = self.tok_embeddings(tokens)
+        else:
+            _bsz, seqlen, _dim = tokens.shape
+            h = tokens
         self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
         mask = None
-        if seqlen > 1:
+        if self.causal_mask and seqlen > 1:
             mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
 
             mask = torch.triu(mask, diagonal=1)
@@ -284,5 +285,8 @@ class Transformer(nn.Module):
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
-        output = self.output(h).float()
-        return output
+        if self.use_output_layer:
+            output = self.output(h).float()
+            return output
+        else:
+            return h

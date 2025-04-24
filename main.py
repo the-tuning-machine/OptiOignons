@@ -12,14 +12,13 @@ import torch.optim as optim
 # On freeze les poids de L
 # On update les poids de B avec la loss L (sans mettre à jour ceux de L)
 # On calcule la MSE entre les poids de A et ceux de B et cela devient la loss de L
-# On 
-
-
+# On
 
 
 # Définir la fonction de perte et l'optimiseur
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
+
 
 # Boucle d'entraînement
 def train(model, device, train_loader, optimizer, criterion, epoch):
@@ -32,8 +31,11 @@ def train(model, device, train_loader, optimizer, criterion, epoch):
         loss.backward()
         optimizer.step()
         if batch_idx % 100 == 0:
-            print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} '
-                  f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
+            print(
+                f"Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} "
+                f"({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}"
+            )
+
 
 # Boucle de test
 def test(model, device, test_loader, criterion):
@@ -49,9 +51,12 @@ def test(model, device, test_loader, criterion):
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     test_loss /= len(test_loader.dataset)
-    accuracy = 100. * correct / len(test_loader.dataset)
-    print(f'\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} '
-          f'({accuracy:.0f}%)\n')
+    accuracy = 100.0 * correct / len(test_loader.dataset)
+    print(
+        f"\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} "
+        f"({accuracy:.0f}%)\n"
+    )
+
 
 # Vérifier si un GPU est disponible
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
