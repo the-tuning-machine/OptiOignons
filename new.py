@@ -21,7 +21,7 @@ class LlamaExtractor(BaseFeaturesExtractor):
         self.embed_dim = embed_dim
         # use llama_cpu Transformer as feature extractor (no causal mask)
         params = ModelArgs(
-            embed_dim, 2, 2, vocab_size=embed_dim * 2, apply_tok_embeddings=False
+            embed_dim, 2, 2, vocab_size=1, apply_tok_embeddings=False
         )
         params.causal_mask = False
         self.transformer = Transformer(params)
@@ -65,6 +65,7 @@ class LossEnv(Env):
         self,
         seq_len: int = 32,
         embed_dim: int = 16,
+        vocab_size: int = 1000,
         batch_size: int = 4,
         max_steps: int = 20,
         eps: float = 1e-4,
@@ -85,7 +86,7 @@ class LossEnv(Env):
             dtype=np.float32,
         )
         self.action_space = spaces.Box(low=0, high=1000.0, shape=(batch_size,), dtype=np.float32)
-        self.params = ModelArgs(self.embed_dim, 2, 2, vocab_size=1000)
+        self.params = ModelArgs(self.embed_dim, 2, 2, vocab_size=vocab_size)
         self.params.causal_mask = False
 
     def reset(self, *, seed=None, options=None):
@@ -115,11 +116,18 @@ class LossEnv(Env):
             torch.mean((pt - ps) ** 2)
             for pt, ps in zip(self.teacher.parameters(), self.student.parameters())
         )
+
+        # on freeze les poids du LossNetwork
+
         # update student with loss network output
         self.student_optimizer.zero_grad()
-        student_loss = (loss_value * mse_before).mean()
+        # student_loss = (loss_value * mse_before).mean()
+        student_loss = loss_value.mean()
         student_loss.backward()
         self.student_optimizer.step()
+
+        # on défreeze les poids du LossNetwork
+
         # compute weight mse after
         mse_after = sum(
             torch.mean((pt - ps) ** 2)
@@ -139,7 +147,7 @@ class LossEnv(Env):
 # 5. Training
 # =============================================================================
 if __name__ == "__main__":
-    env = LossEnv(seq_len=32, embed_dim=16, batch_size=4, max_steps=20)
+    env = LossEnv(seq_len=32, embed_dim=16, vocab_size=100, batch_size=4, max_steps=20)
     check_env(env)
 
     model = PPO(
@@ -153,7 +161,6 @@ if __name__ == "__main__":
         tensorboard_log="./ppo_lossnet_policy/",
         policy_kwargs={"seq_len": 32, "embed_dim": 16},
     )
-    # model.learn(total_timesteps=200_000, callback=callback)
     model.learn(total_timesteps=200_000)
     model.save("ppo_lossnet_llama_policy")
     print("Training complete.")

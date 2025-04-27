@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from llama_cpu import Transformer, ModelArgs  # On suppose que ce module est disponible
 import copy
+import torch.nn.functional as F
 
 CLASSROOM_SIZE = 3
 
@@ -10,7 +11,7 @@ CLASSROOM_SIZE = 3
 # Définition du Loss Network (L) sous forme d'une politique stochastique
 # =============================================================================
 class LossNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_dim=16):
+    def __init__(self, input_dim, hidden_dim=16, output_dim=20):
         """
         Le réseau prend en entrée la sortie du student (de dimension input_dim)
         et produit un scalaire de perte. Pour introduire de la stochasticité (et
@@ -18,15 +19,24 @@ class LossNetwork(nn.Module):
         log-probabilité associée.
         """
         super(LossNetwork, self).__init__()
+        self.output_dim = output_dim
         self.mlp = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
+            nn.Linear(hidden_dim, output_dim),
         )
     
     def forward(self, student_output):
         flat = student_output.reshape(student_output.size(0), -1).clone()
-        return self.mlp(flat).mean()
+        logits = self.mlp(flat).mean(dim=0)
+        return F.softmax(logits, dim=-1)
+    
+    def distrib_to_loss(self, distrib):
+        weights = torch.linspace(0, 10, self.output_dim)
+        return torch.matmul(distrib, weights).mean()
+    
+    def discretize(self, value):
+        pass
     
 def freeze(model):
     for i, param in enumerate(model.parameters()):
@@ -69,8 +79,8 @@ params = ModelArgs(
 
 # Pour le loss network, la dimension d'entrée est celle de la sortie du student.
 # Ici, nous supposons que la sortie du Transformer a une dimension fixée (par exemple, 32).
-loss_nets = [LossNetwork(input_dim=2*dim*seq_len, hidden_dim=dim) for _ in range(CLASSROOM_SIZE)]
-loss_net_optimizers = [optim.Adam(loss_net.parameters()) for loss_net in loss_nets]
+loss_net = LossNetwork(input_dim=2*dim*seq_len, hidden_dim=dim)
+loss_net_optimizer = optim.Adam(loss_net.parameters())
 
 num_iterations = 10000
 num_episode = 100
@@ -85,6 +95,7 @@ for episode in range(num_episode):
     student = Transformer(params)
     student_optimizer = optim.AdamW(student.parameters())
     for iteration in range(num_iterations):
+        old_weight__mse = weight_mse(teacher, student)
         X = torch.randint(0, vocab_size, (batch_size, seq_len))
         with torch.no_grad():
             teacher_output = teacher(X, 0)
@@ -92,33 +103,23 @@ for episode in range(num_episode):
         student_optimizer.zero_grad()
         student_output = student(X, 0)
 
-        student_clone.load_state_dict(student.state_dict())
-        loss_outputs = [None for _ in range(CLASSROOM_SIZE)]
-        loss_errors = [None for _ in range(CLASSROOM_SIZE)]
+        loss_net_optimizer.zero_grad()
 
-        for classmate in range(CLASSROOM_SIZE):
-            loss_net = loss_nets[classmate]
-            loss_net_optimizers[classmate].zero_grad()
+        concat_output = torch.cat((student_output, teacher_output), dim=1)
+        loss_distrib_output = loss_net(concat_output)
+        loss_output = loss_net.distrib_to_loss(loss_distrib_output)
+        freeze(loss_net)
+        loss_output.backward(retain_graph=True)
+        student_optimizer.step()
+        unfreeze(loss_net)
+        new_weight__mse = weight_mse(teacher, student)
+        
+        reward = old_weight__mse - new_weight__mse
 
-            concat_output = torch.cat((student_output, teacher_output), dim=1)
-            loss_outputs[classmate] = loss_net(concat_output)
-            freeze(loss_net)
-            loss_outputs[classmate].backward(retain_graph=True)
-            student_optimizer.step()
-            unfreeze(loss_net)
-            loss_errors[classmate] = weight_mse(teacher, student)
-        
-        
+        # on train la loss en fonction de la reward
+        loss_loss = - reward * 
+
         freeze(student)
-        best_classmate = loss_errors.index(min(loss_errors))
-        y = loss_outputs[best_classmate]
-        loss_losses = [None for _ in range(CLASSROOM_SIZE)]
-        
-        for classmate in range(CLASSROOM_SIZE):
-            loss_losses[classmate] = (loss_errors[classmate] - y)**2
-            loss_losses[classmate].backward()
-            loss_net_optimizers[classmate].step()
-        
         unfreeze(student)
 
 print("Entraînement terminé.")
