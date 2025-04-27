@@ -19,7 +19,7 @@ class LossNetwork(nn.Module):
         log-probabilité associée.
         """
         super(LossNetwork, self).__init__()
-        self.output_dim = output_dim
+        self.weights = torch.linspace(0, 10, self.output_dim)
         self.mlp = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
@@ -31,12 +31,12 @@ class LossNetwork(nn.Module):
         logits = self.mlp(flat).mean(dim=0)
         return F.softmax(logits, dim=-1)
     
-    def distrib_to_loss(self, distrib):
-        weights = torch.linspace(0, 10, self.output_dim)
-        return torch.matmul(distrib, weights).mean()
+    def distrib_to_loss(self, distribution):
+        return torch.matmul(distribution, self.weights).mean()
     
-    def discretize(self, value):
-        pass
+    def discretize(self, distribution, value):
+        idx = torch.argmin(torch.abs(self.weights - value))
+        return distribution.mean(dim=0)[idx]
     
 def freeze(model):
     for i, param in enumerate(model.parameters()):
@@ -101,10 +101,9 @@ for episode in range(num_episode):
             teacher_output = teacher(X, 0)
 
         student_optimizer.zero_grad()
-        student_output = student(X, 0)
-
         loss_net_optimizer.zero_grad()
 
+        student_output = student(X, 0)
         concat_output = torch.cat((student_output, teacher_output), dim=1)
         loss_distrib_output = loss_net(concat_output)
         loss_output = loss_net.distrib_to_loss(loss_distrib_output)
@@ -112,14 +111,16 @@ for episode in range(num_episode):
         loss_output.backward(retain_graph=True)
         student_optimizer.step()
         unfreeze(loss_net)
+
         new_weight__mse = weight_mse(teacher, student)
-        
         reward = old_weight__mse - new_weight__mse
 
         # on train la loss en fonction de la reward
-        loss_loss = - reward * 
-
+        loss_loss = - reward * loss_net.discretize(loss_distrib_output, loss_output)
         freeze(student)
+        loss_loss.backward()
+        loss_net_optimizer.step()
         unfreeze(student)
+
 
 print("Entraînement terminé.")
