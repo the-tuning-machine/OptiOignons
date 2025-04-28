@@ -24,11 +24,9 @@ class ModelArgs:
 
     max_batch_size: int = 32
     max_seq_len: int = 2048
-    causal_mask: bool = True  # Ajout du paramètre pour contrôler le masque causal
-    use_output_layer: bool = False  # Ajout du paramètre pour contrôler la couche output
-    apply_tok_embeddings: bool = (
-        True  # Ajout du paramètre pour contrôler tok_embeddings
-    )
+    causal_mask: bool = True  # control causal masking
+    use_output_layer: bool = False  # control output layer usage
+    apply_tok_embeddings: bool = True  # control token embeddings
 
 
 class RMSNorm(torch.nn.Module):
@@ -116,23 +114,6 @@ class Attention(nn.Module):
             bias=False,
         )
 
-        self.cache_k = torch.empty(
-            (
-                args.max_batch_size,
-                args.max_seq_len,
-                self.n_local_kv_heads,
-                self.head_dim,
-            )
-        )
-        self.cache_v = torch.empty(
-            (
-                args.max_batch_size,
-                args.max_seq_len,
-                self.n_local_kv_heads,
-                self.head_dim,
-            )
-        )
-
     def forward(
         self,
         x: torch.Tensor,
@@ -149,33 +130,23 @@ class Attention(nn.Module):
 
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        self.cache_k = self.cache_k.to(xq)
-        self.cache_v = self.cache_v.to(xq)
+        # No caching: use current keys/values only
+        keys = xk
+        values = xv
 
-        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
-        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
+        # repeat k/v heads if needed
+        keys = repeat_kv(keys, self.n_rep)
+        values = repeat_kv(values, self.n_rep)
 
-        keys = self.cache_k[:bsz, : start_pos + seqlen]
-        values = self.cache_v[:bsz, : start_pos + seqlen]
+        xq = xq.transpose(1, 2)  # (bs, n_heads, seqlen, head_dim)
+        keys = keys.transpose(1, 2)  # (bs, n_heads, seqlen, head_dim)
+        values = values.transpose(1, 2)  # (bs, n_heads, seqlen, head_dim)
 
-        # repeat k/v heads if n_kv_heads < n_heads
-        keys = repeat_kv(
-            keys, self.n_rep
-        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
-        values = repeat_kv(
-            values, self.n_rep
-        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
-
-        xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(
-            1, 2
-        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
         if mask is not None:
-            scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
+            scores = scores + mask
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-        output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+        output = torch.matmul(scores, values)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(output)
 
@@ -190,7 +161,6 @@ class FeedForward(nn.Module):
     ):
         super().__init__()
         hidden_dim = int(2 * hidden_dim / 3)
-        # custom dim factor multiplier
         if ffn_dim_multiplier is not None:
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
@@ -228,8 +198,7 @@ class TransformerBlock(nn.Module):
         mask: Optional[torch.Tensor],
     ):
         h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
-        out = h + self.feed_forward(self.ffn_norm(h))
-        return out
+        return h + self.feed_forward(self.ffn_norm(h))
 
 
 class Transformer(nn.Module):
@@ -238,16 +207,14 @@ class Transformer(nn.Module):
         self.params = params
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
-        self.causal_mask = params.causal_mask  # Stocker le paramètre
-        self.use_output_layer = params.use_output_layer  # Stocker le paramètre
-        self.apply_tok_embeddings = params.apply_tok_embeddings  # Stocker le paramètre
+        self.causal_mask = params.causal_mask
+        self.use_output_layer = params.use_output_layer
+        self.apply_tok_embeddings = params.apply_tok_embeddings
 
         self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
-
-        self.layers = torch.nn.ModuleList()
-        for layer_id in range(params.n_layers):
-            self.layers.append(TransformerBlock(layer_id, params))
-
+        self.layers = nn.ModuleList([
+            TransformerBlock(i, params) for i in range(params.n_layers)
+        ])
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
@@ -257,36 +224,26 @@ class Transformer(nn.Module):
             params.rope_theta,
         )
 
-    @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         if self.apply_tok_embeddings:
-            _bsz, seqlen = tokens.shape
+            bsz, seqlen = tokens.shape
             h = self.tok_embeddings(tokens)
         else:
-            _bsz, seqlen, _dim = tokens.shape
+            _, seqlen, _ = tokens.shape
             h = tokens
-        self.freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+
+        freqs = self.freqs_cis.to(h.device)
+        freqs_cis = freqs[start_pos : start_pos + seqlen]
 
         mask = None
         if self.causal_mask and seqlen > 1:
-            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
-
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=h.device)
             mask = torch.triu(mask, diagonal=1)
-
-            # When performing key-value caching, we compute the attention scores
-            # only for the new sequence. Thus, the matrix of scores is of size
-            # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
-            # j > cache_len + i, since row i corresponds to token cache_len + i.
-            mask = torch.hstack(
-                [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
-            ).type_as(h)
+            # causal-only mask for current sequence
 
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
         if self.use_output_layer:
-            output = self.output(h).float()
-            return output
-        else:
-            return h
+            return self.output(h).float()
+        return h
