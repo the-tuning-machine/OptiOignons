@@ -2,23 +2,20 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from llama_cpu import Transformer, ModelArgs  # On suppose que ce module est disponible
-from loss_net import LossNetwork
+from loss_net import LossNetwork, HarmonicLoss
 from utils import freeze, unfreeze, weight_mse
+
 torch.autograd.set_detect_anomaly(True)
 
 vocab_size = 10
 dim = 16
 seq_len = 32
 batch_size = 4
-params = ModelArgs(
-    dim, 
-    2, 
-    2,
-    vocab_size=vocab_size
-)
+params = ModelArgs(dim, 2, 2, vocab_size=vocab_size)
 
-loss_net = LossNetwork(input_dim=2*dim*seq_len, hidden_dim=dim)
-loss_net_optimizer = optim.Adam(loss_net.parameters(), lr=1)
+# loss_net = LossNetwork(input_dim=2*dim*seq_len, hidden_dim=dim)
+loss_net = HarmonicLoss()
+loss_net_optimizer = optim.Adam(loss_net.parameters())
 # loss_net_optimizer = optim.Adam(loss_net.parameters())
 num_iterations = 10000
 num_episode = 100
@@ -28,20 +25,22 @@ for episode in range(num_episode):
     teacher = Transformer(params)
     student = Transformer(params)
     freeze(teacher)
-    student_optimizer = optim.AdamW(student.parameters(), lr=1)
+    student_optimizer = optim.AdamW(student.parameters())
     # student_optimizer = optim.AdamW(student.parameters())
 
     for iteration in range(num_iterations):
-        print(iteration/num_iterations)
+        print(100 * iteration / num_iterations, "%")
         old_weight__mse = weight_mse(teacher, student)
         print("Distance:", old_weight__mse)
 
         student_optimizer.zero_grad()
         X = torch.randint(0, vocab_size, (batch_size, seq_len))
-        teacher_output = teacher(X, 0).detach()
-        student_output = student(X, 0)
+        teacher_output, teacher_unembedding = teacher(X, 0).detach(), teacher.output.weight
+        student_output, student_unemebedding = student(X, 0), student.output.weight
 
-        loss_distrib_output = loss_net(student_output, teacher_output)
+        loss_distrib_output = loss_net(
+            student_output, student_unemebedding, teacher_output, teacher_unembedding
+        )
         loss_output = loss_net.distrib_to_loss(loss_distrib_output)
         loss_output.backward(retain_graph=True)
         student_optimizer.step()
@@ -49,23 +48,26 @@ for episode in range(num_episode):
         # on train la loss en fonction de la reward
         loss_net_optimizer.zero_grad()
         new_weight__mse = weight_mse(teacher, student)
-        reward = old_weight__mse - new_weight__mse
+        reward = torch.clip(old_weight__mse - new_weight__mse, -0.1, 0.1)
         loss_output = loss_net.distrib_to_loss(loss_distrib_output)
-        loss_loss: torch.Tensor = - reward * loss_net.discretize(loss_distrib_output, loss_output)
-        print("reward", reward)
-
+        loss_loss: torch.Tensor = -reward * loss_net.discretize(
+            loss_distrib_output, loss_output
+        )
+        print("Reward:", reward)
         # loss_loss.backward()
         grads = torch.autograd.grad(
             outputs=loss_loss,
             inputs=loss_net.parameters(),
             retain_graph=False,
-            allow_unused=True
+            allow_unused=True,
         )
 
         for p, g in zip(loss_net.parameters(), grads):
             p.grad = g
 
         loss_net_optimizer.step()
-        print(loss_loss)
+        print("Loss loss:", loss_loss)
+        print("Loss output", loss_output)
+        print()
 
 print("Entraînement terminé.")

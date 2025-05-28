@@ -6,6 +6,7 @@ import copy
 
 CLASSROOM_SIZE = 3
 
+
 # =============================================================================
 # Définition du Loss Network (L) sous forme d'une politique stochastique
 # =============================================================================
@@ -23,23 +24,27 @@ class LossNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
-    
+
     def forward(self, student_output):
         flat = student_output.reshape(student_output.size(0), -1).clone()
         return self.mlp(flat).mean()
-    
+
+
 def freeze(model):
     for i, param in enumerate(model.parameters()):
-        if i%2==1:
+        if i % 2 == 1:
             param.requires_grad = False
+
 
 def detach(model):
     for param in model.parameters():
         param.detach()
 
+
 def unfreeze(model):
     for param in model.parameters():
         param.requires_grad = True
+
 
 # =============================================================================
 # Fonction pour calculer la MSE entre les poids du teacher et ceux du student
@@ -50,6 +55,7 @@ def weight_mse(teacher, student):
         mse += torch.mean((p_teacher - p_student) ** 2)
     return mse
 
+
 # =============================================================================
 # Instanciation des trois modèles
 # =============================================================================
@@ -57,19 +63,17 @@ vocab_size = 10
 dim = 16
 seq_len = 32
 batch_size = 4
-params = ModelArgs(
-    dim, 
-    2, 
-    2,
-    vocab_size=vocab_size
-)
+params = ModelArgs(dim, 2, 2, vocab_size=vocab_size)
 
 # Création du modèle teacher (on ne le mettra jamais à jour)
 # Création du modèle student identique
 
 # Pour le loss network, la dimension d'entrée est celle de la sortie du student.
 # Ici, nous supposons que la sortie du Transformer a une dimension fixée (par exemple, 32).
-loss_nets = [LossNetwork(input_dim=2*dim*seq_len, hidden_dim=dim) for _ in range(CLASSROOM_SIZE)]
+loss_nets = [
+    LossNetwork(input_dim=2 * dim * seq_len, hidden_dim=dim)
+    for _ in range(CLASSROOM_SIZE)
+]
 loss_net_optimizers = [optim.Adam(loss_net.parameters()) for loss_net in loss_nets]
 
 num_iterations = 10000
@@ -107,18 +111,17 @@ for episode in range(num_episode):
             student_optimizer.step()
             unfreeze(loss_net)
             loss_errors[classmate] = weight_mse(teacher, student)
-        
-        
+
         freeze(student)
         best_classmate = loss_errors.index(min(loss_errors))
         y = loss_outputs[best_classmate]
         loss_losses = [None for _ in range(CLASSROOM_SIZE)]
-        
+
         for classmate in range(CLASSROOM_SIZE):
-            loss_losses[classmate] = (loss_errors[classmate] - y)**2
+            loss_losses[classmate] = (loss_errors[classmate] - y) ** 2
             loss_losses[classmate].backward()
             loss_net_optimizers[classmate].step()
-        
+
         unfreeze(student)
 
 print("Entraînement terminé.")

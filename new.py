@@ -20,9 +20,7 @@ class LlamaExtractor(BaseFeaturesExtractor):
         self.seq_len = seq_len
         self.embed_dim = embed_dim
         # use llama_cpu Transformer as feature extractor (no causal mask)
-        params = ModelArgs(
-            embed_dim, 2, 2, vocab_size=1, apply_tok_embeddings=False
-        )
+        params = ModelArgs(embed_dim, 2, 2, vocab_size=1, apply_tok_embeddings=False)
         params.causal_mask = False
         self.transformer = Transformer(params)
 
@@ -85,7 +83,9 @@ class LossEnv(Env):
             shape=(batch_size, 2 * self.seq_len, self.embed_dim),
             dtype=np.float32,
         )
-        self.action_space = spaces.Box(low=0, high=1000.0, shape=(batch_size,), dtype=np.float32)
+        self.action_space = spaces.Box(
+            low=0, high=1000.0, shape=(batch_size,), dtype=np.float32
+        )
         self.params = ModelArgs(self.embed_dim, 2, 2, vocab_size=vocab_size)
         self.params.causal_mask = False
 

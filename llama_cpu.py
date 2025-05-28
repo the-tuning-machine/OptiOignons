@@ -212,9 +212,9 @@ class Transformer(nn.Module):
         self.apply_tok_embeddings = params.apply_tok_embeddings
 
         self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
-        self.layers = nn.ModuleList([
-            TransformerBlock(i, params) for i in range(params.n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [TransformerBlock(i, params) for i in range(params.n_layers)]
+        )
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
