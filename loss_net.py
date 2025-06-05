@@ -73,3 +73,45 @@ class HarmonicLoss(LossNetworkBase):
         diff = unembedding[None, :, None, :] - embeddings[:, None, :, :]
         norm = torch.norm(diff, dim=-1)  # (batch_size, vocab, seq_len)
         return 1 / (norm + epsilon)**self.n * self.harmonic_mean(norm, epsilon=epsilon)
+
+
+class CrossEntropyLoss(LossNetworkBase):
+    def __init__(self, output_dim=20, maximum=20):
+        super().__init__(output_dim, maximum)
+        self.temperature = nn.Parameter(torch.Tensor([1]))
+
+    def forward(self, output, output_unembedding, target, target_unembedding):
+        """
+        output: (batch_size, seq_len, dim)
+        output_unembedding: (vocab_size, dim)
+        target: (batch_size, seq_len, dim)
+        target_unembedding: (vocab_size, dim)
+        """
+        # Calculer les logits pour output
+        logits = self.temperature * torch.matmul(output, output_unembedding.t())  # (batch, seq_len, vocab)
+
+        # Calculer les logits pour target (embeddings)
+        target_logits = torch.matmul(target, target_unembedding.t())  # (batch, seq_len, vocab)
+        target_probs = F.softmax(target_logits, dim=-1)  # (batch, seq_len, vocab)
+
+        # Calculer la cross-entropy entre distributions
+        log_probs = F.log_softmax(logits, dim=-1)  # (batch, seq_len, vocab)
+        loss = -torch.sum(target_probs * log_probs, dim=-1)  # (batch, seq_len)
+        mean_loss = loss.mean(dim=(0, 1))
+        return self.loss_to_distrib(mean_loss)
+
+
+class MSELoss(LossNetworkBase):
+    def __init__(self, output_dim=20, maximum=20):
+        super().__init__(output_dim, maximum)
+        self.scale = nn.Parameter(torch.Tensor([1]))
+
+    def forward(self, output, output_unembedding, target, target_unembedding):
+        """
+        output: (batch_size, seq_len, dim)
+        output_unembedding: (vocab_size, dim)
+        target: (batch_size, seq_len, dim)
+        target_unembedding: (vocab_size, dim)
+        """
+        loss = self.scale[0] * torch.mean((target - output)**2)
+        return self.loss_to_distrib(loss)
